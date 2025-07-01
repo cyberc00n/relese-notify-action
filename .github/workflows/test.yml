@@ -1,0 +1,109 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-action:
+    name: Test Action
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test basic functionality
+        id: test-basic
+        uses: ./
+        with:
+          tag: "v1.0.0-test"
+          mattermost-url: "https://httpbin.org/post"
+          repo-name: "Test Repository"
+        continue-on-error: true
+
+      - name: Verify outputs
+        run: |
+          echo "Formatted message: ${{ steps.test-basic.outputs.formatted-message }}"
+          echo "Commit title: ${{ steps.test-basic.outputs.commit-title }}"
+          
+          # Проверяем, что outputs не пустые
+          if [ -z "${{ steps.test-basic.outputs.formatted-message }}" ]; then
+            echo "❌ formatted-message is empty"
+            exit 1
+          fi
+          
+          if [ -z "${{ steps.test-basic.outputs.commit-title }}" ]; then
+            echo "❌ commit-title is empty"
+            exit 1
+          fi
+          
+          echo "✅ Basic test passed"
+
+      - name: Test with registry URL
+        uses: ./
+        with:
+          tag: "v1.0.0-test-registry"
+          mattermost-url: "https://httpbin.org/post"
+          repo-name: "Test Registry Repository"
+          registry-url: "ghcr.io/test/app"
+          color: "#FF6B35"
+        continue-on-error: true
+
+      - name: Test with custom commit
+        uses: ./
+        with:
+          tag: "v1.0.0-test-custom"
+          mattermost-url: "https://httpbin.org/post"
+          custom-commit-title: "Custom test commit DEV-123 (#456)"
+          linear-workspace: "testworkspace"
+        continue-on-error: true
+
+      - name: Test with formatting disabled
+        uses: ./
+        with:
+          tag: "v1.0.0-test-no-format"
+          mattermost-url: "https://httpbin.org/post"
+          custom-commit-title: "Test commit DEV-123 (#456) without formatting"
+          linear-enabled: "false"
+          github-pr-enabled: "false"
+        continue-on-error: true
+
+  validate-action:
+    name: Validate Action
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          # Проверяем, что action.yml существует и имеет правильную структуру
+          if [ ! -f "action.yml" ]; then
+            echo "❌ action.yml not found"
+            exit 1
+          fi
+          
+          # Проверяем основные поля
+          if ! grep -q "name:" action.yml; then
+            echo "❌ Missing 'name' field in action.yml"
+            exit 1
+          fi
+          
+          if ! grep -q "description:" action.yml; then
+            echo "❌ Missing 'description' field in action.yml"
+            exit 1
+          fi
+          
+          if ! grep -q "runs:" action.yml; then
+            echo "❌ Missing 'runs' field in action.yml"
+            exit 1
+          fi
+          
+          echo "✅ action.yml validation passed"

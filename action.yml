@@ -1,0 +1,171 @@
+name: 'Release Notify Action'
+description: 'Get commit data and send release notification to Mattermost with Linear and GitHub PR links formatting'
+author: 'Your Name'
+branding:
+  icon: 'bell'
+  color: 'blue'
+
+inputs:
+  tag:
+    description: 'Release tag/version'
+    required: true
+  mattermost-url:
+    description: 'Mattermost webhook URL'
+    required: true
+  repo-name:
+    description: 'Repository display name (optional, defaults to repo name)'
+    required: false
+    default: ${{ github.repository }}
+  registry-url:
+    description: 'Container registry URL (optional)'
+    required: false
+    default: ''
+  color:
+    description: 'Color for left side of the message'
+    required: false
+    default: '#58FF33'
+  linear-enabled:
+    description: 'Enable Linear task link formatting'
+    required: false
+    default: 'true'
+  linear-workspace:
+    description: 'Linear workspace name'
+    required: false
+    default: 'binomtracker'
+  github-pr-enabled:
+    description: 'Enable GitHub PR link formatting'
+    required: false
+    default: 'true'
+  custom-commit-title:
+    description: 'Custom commit title (optional, defaults to last commit)'
+    required: false
+    default: ''
+
+outputs:
+  formatted-message:
+    description: 'Formatted commit message'
+    value: ${{ steps.format-message.outputs.message }}
+  commit-title:
+    description: 'Original commit title'
+    value: ${{ steps.get-commit.outputs.title }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get commit title
+      id: get-commit
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.custom-commit-title }}" ]; then
+          COMMIT_TITLE="${{ inputs.custom-commit-title }}"
+        else
+          COMMIT_TITLE=$(git log -1 --pretty=%s | sed 's/\"/\\"/g')
+        fi
+        echo "title=$COMMIT_TITLE" >> $GITHUB_OUTPUT
+        echo "$COMMIT_TITLE" > /tmp/commit_title.txt
+
+    - name: Escape quotes and prepare message
+      id: escape-quotes
+      shell: bash
+      run: |
+        ESCAPED=$(sed 's/"/\\"/g' /tmp/commit_title.txt)
+        echo "$ESCAPED" > /tmp/step1.txt
+        echo "message=$ESCAPED" >> $GITHUB_OUTPUT
+
+    - name: Format Linear task links
+      id: format-linear
+      shell: bash
+      run: |
+        if [ "${{ inputs.linear-enabled }}" = "true" ]; then
+          FORMATTED=$(sed -E 's~#?((DEV|FEA|INT|PRT|SUP|MULT)-[0-9]+)~<https://linear.app/${{ inputs.linear-workspace }}/issue/\1|\1>~' /tmp/step1.txt | sed 's/"/\\"/g')
+        else
+          FORMATTED=$(cat /tmp/step1.txt)
+        fi
+        echo "$FORMATTED" > /tmp/step2.txt
+        echo "message=$FORMATTED" >> $GITHUB_OUTPUT
+
+    - name: Format GitHub PR links
+      id: format-github-pr
+      shell: bash
+      run: |
+        if [ "${{ inputs.github-pr-enabled }}" = "true" ]; then
+          FORMATTED=$(sed -E 's~\(#([0-9]+)\)~<https://github.com/${{ github.repository }}/pull/\1|#\1>~' /tmp/step2.txt | sed 's/"/\\"/g')
+        else
+          FORMATTED=$(cat /tmp/step2.txt)
+        fi
+        echo "$FORMATTED" > /tmp/step3.txt
+        echo "message=$FORMATTED" >> $GITHUB_OUTPUT
+
+    - name: Prepare final message
+      id: format-message
+      shell: bash
+      run: |
+        FINAL_MESSAGE=$(cat /tmp/step3.txt)
+        echo "message=$FINAL_MESSAGE" >> $GITHUB_OUTPUT
+
+    - name: Send notification to Mattermost
+      shell: bash
+      run: |
+        # Prepare JSON payload
+        if [ -n "${{ inputs.registry-url }}" ]; then
+          JSON_PAYLOAD=$(cat << EOF
+        {
+          "attachments": [
+              {
+                  "mrkdwn_in": ["text"],
+                  "color": "${{ inputs.color }}",
+                  "author_name": "${{ inputs.repo-name }}",
+                  "text": "Version: *${{ inputs.tag }}*\nComment: ${{ steps.format-message.outputs.message }}",
+                  "footer": "${{ inputs.registry-url }}",
+                  "fields": [
+                      {
+                          "title": "Repository",
+                          "value": "<https://github.com/${{ github.repository }}|${{ github.repository }}>",
+                          "short": true
+                      },
+                      {
+                          "title": "Commit",
+                          "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${GITHUB_SHA:0:7}>",
+                          "short": true
+                      }
+                  ]
+              }
+          ]
+        }
+        EOF
+        )
+        else
+          JSON_PAYLOAD=$(cat << EOF
+        {
+          "attachments": [
+              {
+                  "mrkdwn_in": ["text"],
+                  "color": "${{ inputs.color }}",
+                  "author_name": "${{ inputs.repo-name }}",
+                  "text": "Version: *${{ inputs.tag }}*\nComment: ${{ steps.format-message.outputs.message }}",
+                  "fields": [
+                      {
+                          "title": "Repository",
+                          "value": "<https://github.com/${{ github.repository }}|${{ github.repository }}>",
+                          "short": true
+                      },
+                      {
+                          "title": "Commit",
+                          "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${GITHUB_SHA:0:7}>",
+                          "short": true
+                      }
+                  ]
+              }
+          ]
+        }
+        EOF
+        )
+        fi
+        
+        # Send notification
+        curl -s --no-progress-bar -X POST "${{ inputs.mattermost-url }}" -H 'Content-type: application/json' -d "$JSON_PAYLOAD"
+
+    - name: Cleanup temp files
+      shell: bash
+      run: |
+        rm -f /tmp/commit_title.txt /tmp/step1.txt /tmp/step2.txt /tmp/step3.txt 

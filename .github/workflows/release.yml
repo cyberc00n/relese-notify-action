@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'examples/**'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, 'skip ci') }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Получаем последний тег
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -z "$LAST_TAG" ]; then
+            echo "changelog=Initial release" >> $GITHUB_OUTPUT
+          else
+            # Генерируем changelog с последнего тега
+            CHANGELOG=$(git log --pretty=format:"- %s" ${LAST_TAG}..HEAD)
+            echo "changelog<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGELOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version and create tag
+        id: tag_version
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          custom_release_rules: |
+            *:patch:Patch Release
+            feat:minor:Minor Release
+            fix:patch:Patch Release
+            breaking:major:Major Release
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag_version.outputs.new_tag }}
+          release_name: Release ${{ steps.tag_version.outputs.new_tag }}
+          body: |
+            ## What's Changed
+            
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## How to use
+            
+            ```yaml
+            - name: Send release notification
+              uses: your-username/release-notify-action@${{ steps.tag_version.outputs.new_tag }}
+              with:
+                tag: ${{ steps.tag_version.outputs.new_tag }}
+                mattermost-url: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
+            ```
+            
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.tag_version.outputs.previous_tag }}...${{ steps.tag_version.outputs.new_tag }}
+          draft: false
+          prerelease: false
+
+      - name: Update major version tag
+        run: |
+          # Обновляем major version tag (например, v1)
+          MAJOR_TAG=$(echo "${{ steps.tag_version.outputs.new_tag }}" | cut -d. -f1)
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -fa $MAJOR_TAG -m "Update $MAJOR_TAG to ${{ steps.tag_version.outputs.new_tag }}"
+          git push origin $MAJOR_TAG --force
+
+  test-new-release:
+    name: Test New Release
+    needs: release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test new release
+        uses: ./
+        with:
+          tag: ${{ needs.release.outputs.new_tag }}
+          mattermost-url: "https://httpbin.org/post"
+          repo-name: "🎉 Release Test"
+          custom-commit-title: "Testing new release ${{ needs.release.outputs.new_tag }}"
+        continue-on-error: true 
