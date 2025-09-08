@@ -106,6 +106,9 @@ runs:
     - name: Send notification to Mattermost
       shell: bash
       run: |
+        # Prepare message for JSON (escape quotes and backslashes)
+        ESCAPED_MESSAGE=$(echo "${{ steps.format-message.outputs.message }}" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+        
         # Prepare JSON payload
         if [ -n "${{ inputs.registry-url }}" ]; then
           JSON_PAYLOAD=$(cat << EOF
@@ -115,7 +118,7 @@ runs:
                   "mrkdwn_in": ["text"],
                   "color": "${{ inputs.color }}",
                   "author_name": "${{ inputs.repo-name }}",
-                  "text": "Version: *${{ inputs.tag }}*\nComment: ${{ steps.format-message.outputs.message }}",
+                  "text": "Version: *${{ inputs.tag }}*\nComment: $ESCAPED_MESSAGE",
                   "footer": "${{ inputs.registry-url }}",
                   "fields": [
                       {
@@ -142,7 +145,7 @@ runs:
                   "mrkdwn_in": ["text"],
                   "color": "${{ inputs.color }}",
                   "author_name": "${{ inputs.repo-name }}",
-                  "text": "Version: *${{ inputs.tag }}*\nComment: ${{ steps.format-message.outputs.message }}",
+                  "text": "Version: *${{ inputs.tag }}*\nComment: $ESCAPED_MESSAGE",
                   "fields": [
                       {
                           "title": "Repository",
@@ -160,6 +163,14 @@ runs:
         }
         EOF
         )
+        fi
+        
+        # Validate JSON before sending
+        echo "$JSON_PAYLOAD" | jq . > /dev/null
+        if [ $? -ne 0 ]; then
+          echo "Error: Invalid JSON payload generated"
+          echo "Payload: $JSON_PAYLOAD"
+          exit 1
         fi
         
         # Send notification
