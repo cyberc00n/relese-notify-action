@@ -55,14 +55,20 @@ runs:
     - name: Get commit title
       id: get-commit
       shell: bash
+      env:
+        CUSTOM_COMMIT_TITLE: ${{ inputs.custom-commit-title }}
       run: |
-        if [ -n "${{ inputs.custom-commit-title }}" ]; then
-          COMMIT_TITLE="${{ inputs.custom-commit-title }}"
+        if [ -n "$CUSTOM_COMMIT_TITLE" ]; then
+          COMMIT_TITLE="$CUSTOM_COMMIT_TITLE"
         else
           COMMIT_TITLE=$(git log -1 --pretty=%s)
         fi
-        echo "title=$COMMIT_TITLE" >> $GITHUB_OUTPUT
-        echo "$COMMIT_TITLE" > /tmp/commit_title.txt
+        {
+          echo "title<<EOF_COMMIT_TITLE"
+          echo "$COMMIT_TITLE"
+          echo "EOF_COMMIT_TITLE"
+        } >> "$GITHUB_OUTPUT"
+        printf '%s\n' "$COMMIT_TITLE" > /tmp/commit_title.txt
 
     - name: Format Linear task links
       id: format-linear
@@ -74,7 +80,11 @@ runs:
           FORMATTED=$(cat /tmp/commit_title.txt)
         fi
         echo "$FORMATTED" > /tmp/step1.txt
-        echo "message=$FORMATTED" >> $GITHUB_OUTPUT
+        {
+          echo "message<<EOF_FORMATTED_MESSAGE"
+          echo "$FORMATTED"
+          echo "EOF_FORMATTED_MESSAGE"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Format GitHub PR links
       id: format-github-pr
@@ -86,89 +96,115 @@ runs:
           FORMATTED=$(cat /tmp/step1.txt)
         fi
         echo "$FORMATTED" > /tmp/step2.txt
-        echo "message=$FORMATTED" >> $GITHUB_OUTPUT
+        {
+          echo "message<<EOF_FORMATTED_MESSAGE"
+          echo "$FORMATTED"
+          echo "EOF_FORMATTED_MESSAGE"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Prepare final message
       id: format-message
       shell: bash
       run: |
         FINAL_MESSAGE=$(cat /tmp/step2.txt)
-        echo "message=$FINAL_MESSAGE" >> $GITHUB_OUTPUT
+        {
+          echo "message<<EOF_FORMATTED_MESSAGE"
+          echo "$FINAL_MESSAGE"
+          echo "EOF_FORMATTED_MESSAGE"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Send notification to Mattermost
       shell: bash
+      env:
+        NOTIFY_TAG: ${{ inputs.tag }}
+        NOTIFY_COLOR: ${{ inputs.color }}
+        NOTIFY_AUTHOR: ${{ inputs.repo-name }}
+        NOTIFY_REGISTRY: ${{ inputs.registry-url }}
+        NOTIFY_REPO: ${{ github.repository }}
+        NOTIFY_SHA: ${{ github.sha }}
+        NOTIFY_URL: ${{ inputs.mattermost-url }}
       run: |
-        # Prepare message for JSON (escape quotes and backslashes)
-        ESCAPED_MESSAGE=$(echo "${{ steps.format-message.outputs.message }}" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
-        
-        # Prepare JSON payload
-        if [ -n "${{ inputs.registry-url }}" ]; then
-          JSON_PAYLOAD=$(cat << EOF
-        {
-          "attachments": [
-              {
-                  "mrkdwn_in": ["text"],
-                  "color": "${{ inputs.color }}",
-                  "author_name": "${{ inputs.repo-name }}",
-                  "text": "Version: *${{ inputs.tag }}*\nComment: $ESCAPED_MESSAGE",
-                  "footer": "${{ inputs.registry-url }}",
-                  "fields": [
-                      {
-                          "title": "Repository",
-                          "value": "<https://github.com/${{ github.repository }}|${{ github.repository }}>",
-                          "short": true
-                      },
-                      {
-                          "title": "Commit",
-                          "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${GITHUB_SHA:0:7}>",
-                          "short": true
-                      }
-                  ]
-              }
-          ]
+        json_escape() {
+          local s=$1
+          s=${s//\\/\\\\}
+          s=${s//\"/\\\"}
+          s=${s//$'\b'/\\b}
+          s=${s//$'\f'/\\f}
+          s=${s//$'\n'/\\n}
+          s=${s//$'\r'/\\r}
+          s=${s//$'\t'/\\t}
+          printf '%s' "$s"
         }
-        EOF
-        )
+
+        MESSAGE=$(cat /tmp/step2.txt)
+        SHORT_SHA="${NOTIFY_SHA:0:7}"
+        TEXT=$(printf 'Version: *%s*\nComment: %s' "$NOTIFY_TAG" "$MESSAGE")
+        REPO_LINK="<https://github.com/${NOTIFY_REPO}|${NOTIFY_REPO}>"
+        COMMIT_LINK="<https://github.com/${NOTIFY_REPO}/commit/${NOTIFY_SHA}|${SHORT_SHA}>"
+
+        ESC_TEXT=$(json_escape "$TEXT")
+        ESC_COLOR=$(json_escape "$NOTIFY_COLOR")
+        ESC_AUTHOR=$(json_escape "$NOTIFY_AUTHOR")
+        ESC_REPO=$(json_escape "$REPO_LINK")
+        ESC_COMMIT=$(json_escape "$COMMIT_LINK")
+
+        if [ -n "$NOTIFY_REGISTRY" ]; then
+          ESC_FOOTER=$(json_escape "$NOTIFY_REGISTRY")
+          JSON_PAYLOAD=$(printf '%s\n' \
+            '{' \
+            '  "attachments": [' \
+            '    {' \
+            '      "mrkdwn_in": ["text"],' \
+            "      \"color\": \"${ESC_COLOR}\"," \
+            "      \"author_name\": \"${ESC_AUTHOR}\"," \
+            "      \"text\": \"${ESC_TEXT}\"," \
+            "      \"footer\": \"${ESC_FOOTER}\"," \
+            '      "fields": [' \
+            '        {"title": "Repository", "value": "'"${ESC_REPO}"'", "short": true},' \
+            '        {"title": "Commit", "value": "'"${ESC_COMMIT}"'", "short": true}' \
+            '      ]' \
+            '    }' \
+            '  ]' \
+            '}')
         else
-          JSON_PAYLOAD=$(cat << EOF
-        {
-          "attachments": [
-              {
-                  "mrkdwn_in": ["text"],
-                  "color": "${{ inputs.color }}",
-                  "author_name": "${{ inputs.repo-name }}",
-                  "text": "Version: *${{ inputs.tag }}*\nComment: $ESCAPED_MESSAGE",
-                  "fields": [
-                      {
-                          "title": "Repository",
-                          "value": "<https://github.com/${{ github.repository }}|${{ github.repository }}>",
-                          "short": true
-                      },
-                      {
-                          "title": "Commit",
-                          "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${GITHUB_SHA:0:7}>",
-                          "short": true
-                      }
-                  ]
-              }
-          ]
-        }
-        EOF
-        )
+          JSON_PAYLOAD=$(printf '%s\n' \
+            '{' \
+            '  "attachments": [' \
+            '    {' \
+            '      "mrkdwn_in": ["text"],' \
+            "      \"color\": \"${ESC_COLOR}\"," \
+            "      \"author_name\": \"${ESC_AUTHOR}\"," \
+            "      \"text\": \"${ESC_TEXT}\"," \
+            '      "fields": [' \
+            '        {"title": "Repository", "value": "'"${ESC_REPO}"'", "short": true},' \
+            '        {"title": "Commit", "value": "'"${ESC_COMMIT}"'", "short": true}' \
+            '      ]' \
+            '    }' \
+            '  ]' \
+            '}')
         fi
-        
-        # Validate JSON before sending
-        echo "$JSON_PAYLOAD" | jq . > /dev/null
-        if [ $? -ne 0 ]; then
-          echo "Error: Invalid JSON payload generated"
-          echo "Payload: $JSON_PAYLOAD"
-          exit 1
+
+        if command -v jq >/dev/null 2>&1; then
+          echo "$JSON_PAYLOAD" | jq .
+        else
+          printf '%s\n' "$JSON_PAYLOAD"
         fi
-        
-        # Send notification
-        curl -s --no-progress-bar -X POST "${{ inputs.mattermost-url }}" -H 'Content-type: application/json' -d "$JSON_PAYLOAD"
+
+        HTTP_CODE=$(curl -sS -o /tmp/mattermost_response.txt -w '%{http_code}' \
+          -X POST "$NOTIFY_URL" \
+          -H 'Content-type: application/json' \
+          --data "$JSON_PAYLOAD")
+        cat /tmp/mattermost_response.txt
+        echo
+        case "$HTTP_CODE" in
+          2*) ;;
+          *)
+            echo "Mattermost webhook failed with HTTP $HTTP_CODE"
+            exit 1
+            ;;
+        esac
 
     - name: Cleanup temp files
       shell: bash
       run: |
-        rm -f /tmp/commit_title.txt /tmp/step1.txt /tmp/step2.txt
+        rm -f /tmp/commit_title.txt /tmp/step1.txt /tmp/step2.txt /tmp/mattermost_response.txt

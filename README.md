@@ -14,7 +14,7 @@ GitHub Action for sending release notifications to Mattermost with automatic for
 ## Usage
 
 ```yaml
-- uses: cyberc00n/relese-notify-action@v0.0.1
+- uses: cyberc00n/relese-notify-action@v0
   with:
     tag: v1.20.3
     mattermost-url: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
@@ -47,3 +47,5 @@ GitHub Action for sending release notifications to Mattermost with automatic for
 - ✅ Added proper JSON escaping
 - ✅ Added JSON validation before sending
 - ✅ Improved special character handling in messages
+
+The payload is built in bash from the commit title file. Quotes, backslashes, and newlines in the title are JSON-escaped without being inserted into the shell script. A non-2xx response from Mattermost fails the step.
